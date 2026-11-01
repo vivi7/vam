@@ -1,0 +1,10 @@
+#!/bin/sh
+# Gradle wrapper script
+
+GRADLE_HOME=/usr/local/gradle
+if [ -d "$GRADLE_HOME" ]; then
+    "$GRADLE_HOME/bin/gradle" "$@"
+else
+    echo "Gradle not found. Please install Gradle or set GRADLE_HOME."
+    exit 1
+fi

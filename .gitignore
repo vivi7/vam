@@ -1,0 +1,7 @@
+refs/
+docs/reports/
+build/
+*.o
+*.so
+.bashrc.local
+.DS_Store

@@ -1,0 +1,4 @@
+sdk=32
+incremental=202209020048
+device=duo
+abi=arm64-v8a
