@@ -1,13 +1,12 @@
-// build.gradle.kts - Build configuration for camswap app
-
 plugins {
-    id("com.android.application")
-    kotlin("android")
+    id("com.android.application") version "8.7.3"
+    id("org.jetbrains.kotlin.android") version "2.0.21"
+    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
 }
 
 android {
     namespace = "com.camswap"
-    compileSdk = 32
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.camswap"
@@ -15,41 +14,28 @@ android {
         targetSdk = 32
         versionCode = 1
         versionName = "1.0.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary = true
-        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
 
     buildFeatures {
         compose = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.4.3"
-    }
-
-    packagingOptions {
+    packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
@@ -57,20 +43,18 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.9.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.1")
-    implementation("androidx.activity:activity-compose:1.7.2")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("androidx.compose.ui:ui:1.4.3")
-    implementation("androidx.compose.ui:ui-tooling-preview:1.4.3")
-    implementation("androidx.compose.material3:material3:1.1.1")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    implementation("androidx.navigation:navigation-compose:2.6.0")
-    implementation("com.google.android.material:material:1.9.0")
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4:1.4.3")
-    debugImplementation("androidx.compose.ui:ui-tooling:1.4.3")
-    debugImplementation("androidx.compose.ui:ui-test-manifest:1.4.3")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation(platform("androidx.compose:compose-bom:2024.10.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    val camera = "1.4.1"
+    implementation("androidx.camera:camera-core:$camera")
+    implementation("androidx.camera:camera-camera2:$camera")
+    implementation("androidx.camera:camera-lifecycle:$camera")
+    implementation("com.google.mlkit:face-detection:16.1.7")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 }

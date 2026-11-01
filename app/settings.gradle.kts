@@ -14,4 +14,3 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Camswap"
-include(":app")
