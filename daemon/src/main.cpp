@@ -40,6 +40,10 @@ static void print_usage(const char *prog) {
           "  -r, --rss-budget <n>     RSS budget in MB (default: 350)\n");
   fprintf(stderr, "  -t, --thermal-ladder <l> Thermal ladder (default: "
                   "38:detect_rada,40:roi_128,42:480p,44:passthrough)\n");
+  fprintf(stderr, "  -i, --identity <name>    Identity file name (optional)\n");
+  fprintf(stderr, "  -B, --blur <0|1>         Blur the tracked face\n");
+  fprintf(stderr, "  -K, --blur-track <0|1>   Keep blur on the face\n");
+  fprintf(stderr, "  -L, --blur-level <0-100> Blur strength\n");
   fprintf(stderr, "  -h, --help               Show this help\n");
 }
 
@@ -55,6 +59,10 @@ int main(int argc, char **argv) {
   int rss_budget = 350;
   const char *thermal_ladder =
       "38:detect_rada,40:roi_128,42:480p,44:passthrough";
+  const char *identity = "";
+  int blur = 0;
+  int blur_track = 1;
+  int blur_level = 40;
 
   // Parse options
   static struct option long_options[] = {
@@ -65,12 +73,16 @@ int main(int argc, char **argv) {
       {"fps-floor", required_argument, 0, 'm'},
       {"rss-budget", required_argument, 0, 'r'},
       {"thermal-ladder", required_argument, 0, 't'},
+      {"identity", required_argument, 0, 'i'},
+      {"blur", required_argument, 0, 'B'},
+      {"blur-track", required_argument, 0, 'K'},
+      {"blur-level", required_argument, 0, 'L'},
       {"help", no_argument, 0, 'h'},
       {0, 0, 0, 0}};
 
   int option_index = 0;
   int c;
-  while ((c = getopt_long(argc, argv, "d:l:a:f:m:r:t:h", long_options,
+  while ((c = getopt_long(argc, argv, "d:l:a:f:m:r:t:i:B:K:L:h", long_options,
                           &option_index)) != -1) {
     switch (c) {
     case 'd':
@@ -94,6 +106,18 @@ int main(int argc, char **argv) {
     case 't':
       thermal_ladder = optarg;
       break;
+    case 'i':
+      identity = optarg;
+      break;
+    case 'B':
+      blur = atoi(optarg);
+      break;
+    case 'K':
+      blur_track = atoi(optarg);
+      break;
+    case 'L':
+      blur_level = atoi(optarg);
+      break;
     case 'h':
       print_usage(argv[0]);
       return 0;
@@ -110,6 +134,8 @@ int main(int argc, char **argv) {
   LOGI("daemon: fps_floor=%d", fps_floor);
   LOGI("daemon: rss_budget=%d MB", rss_budget);
   LOGI("daemon: thermal_ladder=%s", thermal_ladder);
+  LOGI("daemon: identity=%s", identity[0] ? identity : "(none)");
+  LOGI("daemon: blur=%d track=%d level=%d", blur, blur_track, blur_level);
 
   // Setup signal handlers
   struct sigaction sa;

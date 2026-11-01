@@ -32,13 +32,21 @@ DAEMON_PATH="$MODPATH/system/bin/camswap_daemon"
 if [ -x "$DAEMON_PATH" ]; then
     log "Starting daemon: $DAEMON_PATH"
     # Run daemon in background
+    identity_arg=""
+    if [ -n "${identity:-}" ]; then
+        identity_arg="--identity=$identity"
+    fi
     $DAEMON_PATH --device=surfaceduo \
-        --lens-policy=$lens_policy \
-        --accel-backend=$accel_backend \
-        --fps-target=$fps_target \
-        --fps-floor=$fps_floor \
-        --rss-budget=$rss_budget_mb \
-        --thermal-ladder=$thermal_ladder &
+        --lens-policy="$lens_policy" \
+        --accel-backend="$accel_backend" \
+        --fps-target="$fps_target" \
+        --fps-floor="$fps_floor" \
+        --rss-budget="$rss_budget_mb" \
+        --thermal-ladder="$thermal_ladder" \
+        --blur="${blur:-0}" \
+        --blur-track="${blur_track:-1}" \
+        --blur-level="${blur_level:-40}" \
+        $identity_arg &
 
     log "Daemon started with PID $!"
 else
