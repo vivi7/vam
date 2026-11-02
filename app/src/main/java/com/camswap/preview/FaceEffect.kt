@@ -171,26 +171,21 @@ class FaceEffect {
     }
 
     private fun paste(dst: Bitmap, id: Prepared, live: Pose, maskLevel: Int) {
-        val srcEye = PointF(
-            (id.pose.leftEye.x + id.pose.rightEye.x) / 2f,
-            (id.pose.leftEye.y + id.pose.rightEye.y) / 2f
-        )
-        val dstEye = PointF(
-            (live.leftEye.x + live.rightEye.x) / 2f,
-            (live.leftEye.y + live.rightEye.y) / 2f
-        )
         val srcAngle = kotlin.math.atan2(
             id.pose.rightEye.y - id.pose.leftEye.y,
             id.pose.rightEye.x - id.pose.leftEye.x
         )
         val dstAngle = kotlin.math.atan2(live.rightEye.y - live.leftEye.y, live.rightEye.x - live.leftEye.x)
-        val degrees = Math.toDegrees((dstAngle - srcAngle).toDouble()).toFloat()
-        val scale = (live.box.height() / id.pose.box.height().coerceAtLeast(1f)) * 1.25f
+        var degrees = Math.toDegrees((dstAngle - srcAngle).toDouble()).toFloat()
+        if (degrees > 180f) degrees -= 360f
+        if (degrees < -180f) degrees += 360f
+        if (abs(degrees) > 35f) degrees = 0f
+        val scale = live.box.height() / id.pose.box.height().coerceAtLeast(1f)
         matrix.reset()
-        matrix.postTranslate(-srcEye.x, -srcEye.y)
-        matrix.postRotate(degrees)
+        matrix.postTranslate(live.box.centerX(), live.box.centerY())
         matrix.postScale(scale, scale)
-        matrix.postTranslate(dstEye.x, dstEye.y)
+        matrix.postRotate(degrees)
+        matrix.postTranslate(-id.pose.box.centerX(), -id.pose.box.centerY())
 
         val layer = Bitmap.createBitmap(dst.width, dst.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(layer)
@@ -217,6 +212,14 @@ class FaceEffect {
         canvas.drawRect(0f, 0f, dst.width.toFloat(), dst.height.toFloat(), shade)
         paint.xfermode = null
         Canvas(dst).drawBitmap(layer, 0f, 0f, paint)
+        if (debugTick % 25 == 1) {
+            val px = live.box.centerX().toInt().coerceIn(0, layer.width - 1)
+            val py = live.box.centerY().toInt().coerceIn(0, layer.height - 1)
+            Log.i(
+                "CamswapPreview",
+                "paste a=${layer.getPixel(px, py) ushr 24} deg=$degrees sc=$scale live=${live.box.centerX().toInt()},${live.box.centerY().toInt()} ${live.box.width().toInt()}x${live.box.height().toInt()} id=${id.pose.box.width().toInt()}x${id.pose.box.height().toInt()} src=${id.bitmap.width}x${id.bitmap.height}"
+            )
+        }
         layer.recycle()
     }
 

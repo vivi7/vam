@@ -179,8 +179,8 @@ private fun CameraEffect(
                 val resolution = ResolutionSelector.Builder()
                     .setResolutionStrategy(
                         ResolutionStrategy(
-                            Size(1080, 1564),
-                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                            Size(480, 640),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
                         )
                     )
                     .build()
@@ -306,6 +306,18 @@ private fun orient(src: Bitmap, degrees: Int, front: Boolean): Bitmap {
         val next = Bitmap.createBitmap(current, 0, 0, current.width, current.height, matrix, true)
         if (owned) current.recycle()
         current = next
+        owned = true
+    }
+    if (current.width > 960 || current.height > 960) {
+        val limit = 960f / maxOf(current.width, current.height)
+        val small = Bitmap.createScaledBitmap(
+            current,
+            (current.width * limit).toInt().coerceAtLeast(2),
+            (current.height * limit).toInt().coerceAtLeast(2),
+            true
+        )
+        if (owned) current.recycle()
+        current = small
         owned = true
     }
     turn(degrees, front)
