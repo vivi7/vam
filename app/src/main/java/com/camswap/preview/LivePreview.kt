@@ -4,10 +4,13 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.util.Log
 import android.util.Size
 import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -52,9 +55,10 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
 data class PreviewEffect(
-    val blur: Boolean = false,
+    val maskRadius: Int = 40,
     val track: Boolean = true,
-    val level: Int = 40,
+    val bgBlur: Boolean = false,
+    val bgLevel: Int = 40,
     val identity: Bitmap? = null,
     val frontCamera: Boolean = true
 )
@@ -170,12 +174,23 @@ private fun CameraEffect(
             try {
                 val provider = cameraFuture.get()
                 val displayRotation = context.display?.rotation ?: Surface.ROTATION_0
+                // Sensor is 4032x2784. A square stream is a center crop and cuts off
+                // the face, which sits at the bottom of the upright frame.
+                val resolution = ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(1080, 1564),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                        )
+                    )
+                    .build()
                 val analysis = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(640, 480))
+                    .setResolutionSelector(resolution)
                     .setTargetRotation(displayRotation)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .build()
+                var frameTick = 0
                 analysis.setAnalyzer(executor) { image ->
                     var raw: Bitmap? = null
                     var upright: Bitmap? = null
@@ -184,11 +199,18 @@ private fun CameraEffect(
                         val current = holder.get()
                         raw = image.toBitmap()
                         upright = orient(raw, image.imageInfo.rotationDegrees, current.frontCamera)
+                        if (frameTick++ % 30 == 0) {
+                            Log.i(
+                                "CamswapPreview",
+                                "raw ${raw.width}x${raw.height} rot=${image.imageInfo.rotationDegrees} up ${upright.width}x${upright.height}"
+                            )
+                        }
                         val shown = engine.apply(
                             upright,
-                            current.blur,
                             current.track,
-                            current.level,
+                            current.maskRadius,
+                            current.bgBlur,
+                            current.bgLevel,
                             current.identity
                         )
                         if (shown !== upright) upright.recycle()
@@ -239,7 +261,7 @@ private fun CameraEffect(
                 bitmap = it.asImageBitmap(),
                 contentDescription = "Preview",
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Fit
             )
         }
         effect.identity?.let {

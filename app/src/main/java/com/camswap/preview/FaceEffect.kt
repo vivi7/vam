@@ -1,7 +1,9 @@
 package com.camswap.preview
 
 import android.graphics.Bitmap
+import android.util.Log
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
@@ -10,8 +12,10 @@ import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.Shader
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
@@ -24,6 +28,7 @@ import kotlin.math.cos
 import kotlin.math.sin
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
@@ -34,8 +39,10 @@ class FaceEffect {
         private set
 
     @Volatile private var closed = false
+    private var debugTick = 0
     private var detector: FaceDetector? = null
     private var smooth: Array<PointF>? = null
+    private var smoothPose: Pose? = null
     private var missed = 0
     private var preparedFor: Bitmap? = null
     private var prepared: Prepared? = null
@@ -51,30 +58,77 @@ class FaceEffect {
         prepared = null
         preparedFor = null
         smooth = null
+        smoothPose = null
     }
 
-    fun apply(frame: Bitmap, blur: Boolean, track: Boolean, level: Int, identity: Bitmap?): Bitmap {
+    fun apply(
+        frame: Bitmap,
+        track: Boolean,
+        maskRadius: Int,
+        bgBlur: Boolean,
+        bgLevel: Int,
+        identity: Bitmap?
+    ): Bitmap {
         note = FrameNote.NONE
         if (closed) return frame
         val src = scale(frame, 400)
+        val mask = maskRadius.coerceIn(0, 100)
+        val background = if (bgBlur) bgLevel.coerceIn(0, 100) else 0
+        if (identity == null && mask == 0 && background == 0) return src
         val face = detect(src)
-        val live = face?.let { mesh(it) }
-        val followed = follow(live, track)
-        val radius = (level.coerceIn(0, 100) * 22) / 100
-        if (followed != null && blur && radius > 0) {
-            blurOval(src, followed, radius, if (identity == null) 1.08f else 1.42f)
-        } else if (followed == null && face != null && blur && radius > 0) {
-            blurBox(src, RectF(face.boundingBox), radius)
-        }
-        if (identity != null && followed != null) {
+        val pose = followPose(face?.let { poseOf(it) }, track)
+        if (background > 0) blurBackground(src, pose, background)
+        if (identity != null) {
             val id = prepare(identity)
             if (id == null) {
                 if (note == FrameNote.NONE) note = FrameNote.IDENTITY
-            } else {
-                warp(src, id, followed)
+            } else if (pose != null) {
+                paste(src, id, pose, mask)
             }
+        } else if (pose != null && mask > 0) {
+            blurBox(src, pose.box, (mask * 18 / 100).coerceAtLeast(1))
         }
         return src
+    }
+
+    private fun followPose(next: Pose?, track: Boolean): Pose? {
+        if (!track) return next ?: smoothPose
+        if (next == null) {
+            missed += 1
+            return if (missed <= 12) smoothPose else null
+        }
+        missed = 0
+        val prev = smoothPose
+        if (prev == null) {
+            smoothPose = next
+            return next
+        }
+        val t = 0.65f
+        fun mix(a: Float, b: Float) = a + (b - a) * t
+        fun pt(a: PointF, b: PointF) = PointF(mix(a.x, b.x), mix(a.y, b.y))
+        val box = RectF(
+            mix(prev.box.left, next.box.left),
+            mix(prev.box.top, next.box.top),
+            mix(prev.box.right, next.box.right),
+            mix(prev.box.bottom, next.box.bottom)
+        )
+        smoothPose = Pose(box, pt(prev.leftEye, next.leftEye), pt(prev.rightEye, next.rightEye), pt(prev.mouth, next.mouth))
+        return smoothPose
+    }
+
+    private fun poseOf(face: Face): Pose? {
+        val box = RectF(face.boundingBox)
+        if (box.width() < 8f || box.height() < 8f) return null
+        var left = mark(face, FaceLandmark.LEFT_EYE) ?: at(box, 0.32f, 0.40f)
+        var right = mark(face, FaceLandmark.RIGHT_EYE) ?: at(box, 0.68f, 0.40f)
+        if (left.x > right.x) {
+            val swap = left
+            left = right
+            right = swap
+        }
+        val mouth = mark(face, FaceLandmark.MOUTH_BOTTOM)
+            ?: at(box, 0.50f, 0.76f)
+        return Pose(box, left, right, mouth)
     }
 
     private fun follow(next: Array<PointF>?, track: Boolean): Array<PointF>? {
@@ -84,7 +138,7 @@ class FaceEffect {
         }
         if (next == null) {
             missed += 1
-            return if (missed <= 8) smooth else null
+            return if (missed <= 12) smooth else null
         }
         missed = 0
         val prev = smooth
@@ -93,8 +147,8 @@ class FaceEffect {
             return smooth
         }
         for (i in next.indices) {
-            prev[i].x = prev[i].x * 0.55f + next[i].x * 0.45f
-            prev[i].y = prev[i].y * 0.55f + next[i].y * 0.45f
+            prev[i].x = prev[i].x * 0.35f + next[i].x * 0.65f
+            prev[i].y = prev[i].y * 0.35f + next[i].y * 0.65f
         }
         return prev
     }
@@ -104,85 +158,150 @@ class FaceEffect {
         prepared?.bitmap?.recycle()
         prepared = null
         preparedFor = identity
-        val scaled = scale(identity, 360)
-        val face = detect(scaled)
-        val pts = face?.let { mesh(it) }
-        if (pts == null) {
+        val scaled = scale(identity, 480)
+        val pose = detect(scaled)?.let { poseOf(it) }
+        if (pose == null) {
             scaled.recycle()
             note = FrameNote.IDENTITY
             return null
         }
-        val ready = Prepared(scaled, pts, triangulate(pts))
+        val ready = Prepared(scaled, pose)
         prepared = ready
         return ready
     }
 
-    private fun warp(dst: Bitmap, id: Prepared, live: Array<PointF>) {
-        if (id.triangles.isEmpty() || live.size != id.points.size) return
-        val canvas = Canvas(dst)
-        canvas.save()
-        canvas.clipPath(oval(live, 1.04f))
-        paint.colorFilter = tint(id.bitmap, id.points, dst, live)
-        for (tri in id.triangles) {
-            val s0 = id.points[tri[0]]
-            val s1 = id.points[tri[1]]
-            val s2 = id.points[tri[2]]
-            val d0 = live[tri[0]]
-            val d1 = live[tri[1]]
-            val d2 = live[tri[2]]
-            if (abs(area(d0, d1, d2)) < 6f || abs(area(s0, s1, s2)) < 6f) continue
-            path.rewind()
-            path.moveTo(d0.x, d0.y)
-            path.lineTo(d1.x, d1.y)
-            path.lineTo(d2.x, d2.y)
-            path.close()
-            val ok = matrix.setPolyToPoly(
-                floatArrayOf(s0.x, s0.y, s1.x, s1.y, s2.x, s2.y),
-                0,
-                floatArrayOf(d0.x, d0.y, d1.x, d1.y, d2.x, d2.y),
-                0,
-                3
-            )
-            if (!ok) continue
-            canvas.save()
-            canvas.clipPath(path)
-            canvas.drawBitmap(id.bitmap, matrix, paint)
-            canvas.restore()
-        }
-        canvas.restore()
+    private fun paste(dst: Bitmap, id: Prepared, live: Pose, maskLevel: Int) {
+        val srcEye = PointF(
+            (id.pose.leftEye.x + id.pose.rightEye.x) / 2f,
+            (id.pose.leftEye.y + id.pose.rightEye.y) / 2f
+        )
+        val dstEye = PointF(
+            (live.leftEye.x + live.rightEye.x) / 2f,
+            (live.leftEye.y + live.rightEye.y) / 2f
+        )
+        val srcAngle = kotlin.math.atan2(
+            id.pose.rightEye.y - id.pose.leftEye.y,
+            id.pose.rightEye.x - id.pose.leftEye.x
+        )
+        val dstAngle = kotlin.math.atan2(live.rightEye.y - live.leftEye.y, live.rightEye.x - live.leftEye.x)
+        val degrees = Math.toDegrees((dstAngle - srcAngle).toDouble()).toFloat()
+        val scale = (live.box.height() / id.pose.box.height().coerceAtLeast(1f)) * 1.25f
+        matrix.reset()
+        matrix.postTranslate(-srcEye.x, -srcEye.y)
+        matrix.postRotate(degrees)
+        matrix.postScale(scale, scale)
+        matrix.postTranslate(dstEye.x, dstEye.y)
+
+        val layer = Bitmap.createBitmap(dst.width, dst.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(layer)
+        paint.colorFilter = tint(id.bitmap, id.pose, dst, live)
+        paint.xfermode = null
+        canvas.drawBitmap(id.bitmap, matrix, paint)
         paint.colorFilter = null
+        val cx = live.box.centerX()
+        val cy = live.box.centerY() + live.box.height() * 0.04f
+        val radius = max(live.box.width(), live.box.height()) * 0.72f
+        val feather = maskLevel.coerceIn(0, 100) / 100f
+        val ratio = (0.96f - feather * 0.38f).coerceIn(0.58f, 0.96f)
+        val shade = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                cx,
+                cy,
+                radius.coerceAtLeast(1f),
+                intArrayOf(Color.WHITE, Color.WHITE, Color.TRANSPARENT),
+                floatArrayOf(0f, ratio, 1f),
+                Shader.TileMode.CLAMP
+            )
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+        }
+        canvas.drawRect(0f, 0f, dst.width.toFloat(), dst.height.toFloat(), shade)
+        paint.xfermode = null
+        Canvas(dst).drawBitmap(layer, 0f, 0f, paint)
+        layer.recycle()
     }
 
-    private fun tint(src: Bitmap, srcPts: Array<PointF>, dst: Bitmap, dstPts: Array<PointF>): ColorMatrixColorFilter {
-        val from = average(src, srcPts)
-        val to = average(dst, dstPts)
+    private fun tint(src: Bitmap, srcPose: Pose, dst: Bitmap, dstPose: Pose): ColorMatrixColorFilter {
+        val from = sample(src, srcPose)
+        val to = sample(dst, dstPose)
         val shift = ColorMatrix(
             floatArrayOf(
-                1f, 0f, 0f, 0f, (to[0] - from[0]).coerceIn(-28f, 28f),
-                0f, 1f, 0f, 0f, (to[1] - from[1]).coerceIn(-28f, 28f),
-                0f, 0f, 1f, 0f, (to[2] - from[2]).coerceIn(-28f, 28f),
+                1f, 0f, 0f, 0f, (to[0] - from[0]).coerceIn(-36f, 36f),
+                0f, 1f, 0f, 0f, (to[1] - from[1]).coerceIn(-36f, 36f),
+                0f, 0f, 1f, 0f, (to[2] - from[2]).coerceIn(-36f, 36f),
                 0f, 0f, 0f, 1f, 0f
             )
         )
         return ColorMatrixColorFilter(shift)
     }
 
-    private fun average(bitmap: Bitmap, pts: Array<PointF>): FloatArray {
+    private fun sample(bitmap: Bitmap, pose: Pose): FloatArray {
+        val points = arrayOf(pose.leftEye, pose.rightEye, pose.mouth, PointF(pose.box.centerX(), pose.box.centerY()))
         var r = 0f
         var g = 0f
         var b = 0f
         var n = 0
-        for (i in 0 until FACE_N step 2) {
-            val x = pts[i].x.toInt().coerceIn(0, bitmap.width - 1)
-            val y = pts[i].y.toInt().coerceIn(0, bitmap.height - 1)
+        for (p in points) {
+            val x = p.x.toInt().coerceIn(0, bitmap.width - 1)
+            val y = p.y.toInt().coerceIn(0, bitmap.height - 1)
             val color = bitmap.getPixel(x, y)
             r += (color shr 16) and 0xff
             g += (color shr 8) and 0xff
             b += color and 0xff
             n++
         }
-        val d = n.coerceAtLeast(1).toFloat()
+        val d = n.toFloat()
         return floatArrayOf(r / d, g / d, b / d)
+    }
+
+    private fun faceDisk(pts: Array<PointF>): Triple<Float, Float, Float> {
+        var cx = 0f
+        var cy = 0f
+        for (i in 0 until FACE_N) {
+            cx += pts[i].x
+            cy += pts[i].y
+        }
+        cx /= FACE_N
+        cy /= FACE_N
+        var radius = 1f
+        for (i in 0 until FACE_N) {
+            radius = max(radius, hypot(pts[i].x - cx, pts[i].y - cy))
+        }
+        return Triple(cx, cy, radius)
+    }
+
+    private fun blurBackground(dst: Bitmap, pose: Pose?, level: Int) {
+        val factor = (2 + level / 6).coerceIn(2, 18)
+        val sharp = if (pose != null) dst.copy(Bitmap.Config.ARGB_8888, false) else null
+        val small = Bitmap.createScaledBitmap(
+            dst,
+            (dst.width / factor).coerceAtLeast(2),
+            (dst.height / factor).coerceAtLeast(2),
+            true
+        )
+        val blurred = Bitmap.createScaledBitmap(small, dst.width, dst.height, true)
+        small.recycle()
+        paint.colorFilter = null
+        paint.xfermode = null
+        val canvas = Canvas(dst)
+        canvas.drawBitmap(blurred, 0f, 0f, paint)
+        blurred.recycle()
+        if (sharp != null && pose != null) {
+            canvas.save()
+            canvas.clipPath(boxOval(pose, 1.08f))
+            canvas.drawBitmap(sharp, 0f, 0f, paint)
+            canvas.restore()
+            sharp.recycle()
+        }
+    }
+
+    private fun boxOval(pose: Pose, scale: Float): Path {
+        val cx = pose.box.centerX()
+        val cy = pose.box.centerY()
+        val rx = pose.box.width() / 2f * scale
+        val ry = pose.box.height() / 2f * scale
+        return Path().apply {
+            addOval(RectF(cx - rx, cy - ry, cx + rx, cy + ry), Path.Direction.CW)
+        }
     }
 
     private fun blurOval(dst: Bitmap, pts: Array<PointF>, radius: Int, scale: Float) {
@@ -253,13 +372,18 @@ class FaceEffect {
     private fun detect(bitmap: Bitmap): Face? {
         return try {
             val image = InputImage.fromBitmap(bitmap, 0)
-            val faces = Tasks.await(client().process(image), 700, TimeUnit.MILLISECONDS)
-            faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+            val faces = Tasks.await(client().process(image), 400, TimeUnit.MILLISECONDS)
+            val found = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+            if (debugTick++ % 25 == 0) {
+                Log.i("CamswapPreview", "faces=${faces.size} ${bitmap.width}x${bitmap.height}")
+            }
+            found
         } catch (failure: Exception) {
             val text = failure.message.orEmpty() + " " + failure.cause?.message.orEmpty()
             if (text.contains("download", ignoreCase = true) || text.contains("model", ignoreCase = true)) {
                 note = FrameNote.MODEL
             }
+            if (debugTick++ % 25 == 0) Log.w("CamswapPreview", "detect failed", failure)
             null
         }
     }
@@ -267,10 +391,10 @@ class FaceEffect {
     private fun client(): FaceDetector {
         detector?.let { return it }
         val options = FaceDetectorOptions.Builder()
-            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-            .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
-            .setMinFaceSize(0.08f)
+            .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
+            .setMinFaceSize(0.05f)
             .build()
         return FaceDetection.getClient(options).also { detector = it }
     }
@@ -465,7 +589,9 @@ class FaceEffect {
         }
     }
 
-    private data class Prepared(val bitmap: Bitmap, val points: Array<PointF>, val triangles: List<IntArray>)
+    private data class Pose(val box: RectF, val leftEye: PointF, val rightEye: PointF, val mouth: PointF)
+
+    private data class Prepared(val bitmap: Bitmap, val pose: Pose)
 
     companion object {
         private const val FACE_N = 20

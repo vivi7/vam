@@ -16,7 +16,9 @@ data class DeviceConfig(
     val identity: String = "",
     val blurEnabled: Boolean = false,
     val blurTrack: Boolean = true,
-    val blurLevel: String = "40"
+    val blurLevel: String = "40",
+    val bgBlurEnabled: Boolean = false,
+    val bgBlurLevel: String = "40"
 )
 
 data class ModuleStatus(
@@ -165,6 +167,8 @@ class ModuleControl(private val workDir: File) {
         }
         val blur = config.blurLevel.toIntOrNull() ?: return t("livello blur non valido", "invalid blur level")
         if (blur !in 0..100) return t("livello blur fra 0 e 100", "blur level must be from 0 to 100")
+        val background = config.bgBlurLevel.toIntOrNull() ?: return t("livello sfondo non valido", "invalid background level")
+        if (background !in 0..100) return t("livello sfondo fra 0 e 100", "background level must be from 0 to 100")
         return null
     }
 
@@ -215,7 +219,9 @@ class ModuleControl(private val workDir: File) {
             "identity" to config.identity,
             "blur" to if (config.blurEnabled) "1" else "0",
             "blur_track" to if (config.blurTrack) "1" else "0",
-            "blur_level" to config.blurLevel
+            "blur_level" to config.blurLevel,
+            "bg_blur" to if (config.bgBlurEnabled) "1" else "0",
+            "bg_blur_level" to config.bgBlurLevel
         )
         val source = if (rawEnv.isBlank()) DEFAULT_ENV else rawEnv
         val lines = source.lines().filter { it.isNotBlank() }.toMutableList()
@@ -250,7 +256,9 @@ class ModuleControl(private val workDir: File) {
             identity = map["identity"] ?: "",
             blurEnabled = map["blur"] == "1",
             blurTrack = map["blur_track"]?.let { it == "1" } ?: base.blurTrack,
-            blurLevel = map["blur_level"] ?: base.blurLevel
+            blurLevel = map["blur_level"] ?: base.blurLevel,
+            bgBlurEnabled = map["bg_blur"] == "1",
+            bgBlurLevel = map["bg_blur_level"] ?: base.bgBlurLevel
         )
     }
 

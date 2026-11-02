@@ -5,14 +5,25 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -36,9 +47,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.camswap.R
 import com.camswap.control.DeviceConfig
@@ -70,7 +86,9 @@ fun HomeScreen(
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var showPreview by remember { mutableStateOf(false) }
+    var showMore by remember { mutableStateOf(false) }
     var identityBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var faceThumbs by remember { mutableStateOf<Map<String, Bitmap>>(emptyMap()) }
 
     LaunchedEffect(showPreview, config.identity) {
         if (!showPreview || config.identity.isBlank()) {
@@ -81,6 +99,29 @@ fun HomeScreen(
         val error = control.copyIdentityTo(config.identity, dest)
         identityBitmap = if (error == null) BitmapFactory.decodeFile(dest.absolutePath) else null
         if (error != null) message = error
+    }
+
+    val faceKey = status?.identities?.joinToString("\n").orEmpty()
+    LaunchedEffect(faceKey) {
+        val names = status?.identities.orEmpty()
+        if (names.isEmpty()) {
+            faceThumbs = emptyMap()
+            return@LaunchedEffect
+        }
+        val loaded = linkedMapOf<String, Bitmap>()
+        for (name in names) {
+            val dest = File(context.cacheDir, "thumb-$name")
+            if (control.copyIdentityTo(name, dest) == null) {
+                BitmapFactory.decodeFile(dest.absolutePath)?.let { loaded[name] = it }
+            }
+        }
+        faceThumbs = loaded
+    }
+
+    fun wear(name: String) {
+        val next = if (config.identity == name) "" else name
+        config = config.copy(identity = next)
+        if (next.isNotEmpty()) showPreview = true
     }
 
     suspend fun reload(fillForm: Boolean) {
@@ -184,141 +225,202 @@ fun HomeScreen(
                     Text(current.modulePath, style = MaterialTheme.typography.bodySmall)
                 }
 
-                ToggleRow(text.active, current.running, enabled = !busy && current.modulePath.isNotBlank()) { on ->
-                    scope.launch {
-                        busy = true
-                        message = control.setRunning(config, rawEnv, start = on)
-                        busy = false
-                        reload(fillForm = false)
-                    }
-                }
-                ToggleRow(text.boot, current.bootEnabled, enabled = !busy) { on ->
-                    scope.launch {
-                        busy = true
-                        message = control.setBootEnabled(on)
-                        busy = false
-                        reload(fillForm = false)
-                    }
-                }
-
-                Text(text.settings, style = MaterialTheme.typography.titleMedium)
-                ChipRow(text.lens, listOf("all", "front", "back"), config.lensPolicy, mapOf("all" to text.lensAll, "front" to text.lensFront, "back" to text.lensBack)) {
-                    config = config.copy(lensPolicy = it)
-                }
-                ChipRow(text.backend, listOf("gpu_gl", "cpu"), config.accelBackend, mapOf("gpu_gl" to "GPU", "cpu" to "CPU")) {
-                    config = config.copy(accelBackend = it)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
-                        value = config.fpsTarget,
-                        onValueChange = { config = config.copy(fpsTarget = it.filter(Char::isDigit)) },
-                        label = { Text(text.fpsTarget) },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = config.fpsFloor,
-                        onValueChange = { config = config.copy(fpsFloor = it.filter(Char::isDigit)) },
-                        label = { Text(text.fpsFloor) },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                }
-                OutlinedTextField(
-                    value = config.rssBudgetMb,
-                    onValueChange = { config = config.copy(rssBudgetMb = it.filter(Char::isDigit)) },
-                    label = { Text(text.ram) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = config.thermalLadder,
-                    onValueChange = { config = config.copy(thermalLadder = it.trim()) },
-                    label = { Text(text.thermal) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                Text(text.blur, style = MaterialTheme.typography.titleMedium)
-                ToggleRow(text.blurFace, config.blurEnabled, enabled = !busy) { on ->
-                    config = config.copy(blurEnabled = on)
-                }
-                ToggleRow(text.trackFace, config.blurTrack, enabled = !busy) { on ->
-                    config = config.copy(blurTrack = on)
-                }
-                Text(text.level.format(config.blurLevel))
-                Slider(
-                    value = (config.blurLevel.toFloatOrNull() ?: 40f).coerceIn(0f, 100f),
-                    onValueChange = { config = config.copy(blurLevel = it.toInt().toString()) },
-                    valueRange = 0f..100f,
-                    enabled = config.blurEnabled
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        config = config.copy(fpsTarget = "20", fpsFloor = "15")
-                    }) { Text(text.presetKyc) }
-                    OutlinedButton(onClick = {
-                        config = config.copy(fpsTarget = "30", fpsFloor = "15")
-                    }) { Text(text.presetPreview) }
-                }
-                Button(
-                    onClick = {
-                        scope.launch {
-                            busy = true
-                            message = control.save(config, rawEnv, restartIfRunning = current.running)
-                            busy = false
-                            reload(fillForm = true)
+                val canInject = !busy && current.modulePath.isNotBlank()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(if (current.running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(enabled = canInject) {
+                            scope.launch {
+                                busy = true
+                                message = control.setRunning(config, rawEnv, start = !current.running)
+                                busy = false
+                                reload(fillForm = false)
+                            }
                         }
-                    },
-                    enabled = !busy
-                ) { Text(text.save) }
+                        .padding(horizontal = 22.dp, vertical = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (current.running) text.stopInjection else text.startInjection,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = if (current.running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            if (current.running) text.daemonOn.format(current.pid) else text.daemonOff,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (current.running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
 
-                Text(text.identity, style = MaterialTheme.typography.titleMedium)
+                Text(text.wear, style = MaterialTheme.typography.titleMedium)
                 if (current.identities.isEmpty()) {
                     Text(text.noFiles)
-                } else {
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    FaceChoice(
+                        label = text.noneFace,
+                        selected = config.identity.isBlank(),
+                        bitmap = null,
+                        onClick = { config = config.copy(identity = "") }
+                    )
                     current.identities.forEach { name ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                        FaceChoice(
+                            label = name.substringBeforeLast('.'),
+                            selected = config.identity == name,
+                            bitmap = faceThumbs[name],
+                            onClick = { wear(name) }
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            modifier = Modifier
+                                .size(76.dp)
+                                .clip(CircleShape)
+                                .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                                .clickable(enabled = !busy) { picker.launch(arrayOf("image/*")) },
+                            contentAlignment = Alignment.Center
                         ) {
-                            TextButton(onClick = { config = config.copy(identity = name) }) {
-                                Text(if (config.identity == name) "● $name" else name)
-                            }
-                            TextButton(
-                                onClick = {
-                                    scope.launch {
-                                        busy = true
-                                        message = control.deleteIdentity(name)
-                                        if (config.identity == name) config = config.copy(identity = "")
-                                        busy = false
-                                        reload(fillForm = false)
-                                    }
-                                },
-                                enabled = !busy
-                            ) { Text(text.remove) }
+                            Text("+", style = MaterialTheme.typography.headlineMedium)
                         }
+                        Spacer(Modifier.height(6.dp))
+                        Text(text.addFile, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
                     }
                 }
                 Text(
                     if (config.identity.isBlank()) text.noneSelected else text.selected.format(config.identity),
                     style = MaterialTheme.typography.bodySmall
                 )
-                Text(
-                    text.caption,
-                    style = MaterialTheme.typography.bodySmall
-                )
-                OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = !busy) {
-                    Text(text.addFile)
+                if (config.identity.isNotBlank()) {
+                    TextButton(
+                        onClick = {
+                            val name = config.identity
+                            scope.launch {
+                                busy = true
+                                message = control.deleteIdentity(name)
+                                config = config.copy(identity = "")
+                                busy = false
+                                reload(fillForm = false)
+                            }
+                        },
+                        enabled = !busy
+                    ) { Text(text.remove) }
                 }
 
-                if (!current.log.isBlank()) {
-                    Text(text.log, style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        current.log.takeLast(1200),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace
+                Text(text.maskRadius, style = MaterialTheme.typography.titleMedium)
+                Text(text.maskHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(text.level.format(config.blurLevel), style = MaterialTheme.typography.bodySmall)
+                Slider(
+                    value = (config.blurLevel.toFloatOrNull() ?: 40f).coerceIn(0f, 100f),
+                    onValueChange = {
+                        val level = it.toInt().toString()
+                        config = config.copy(blurLevel = level, blurEnabled = it.toInt() > 0)
+                    },
+                    valueRange = 0f..100f
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(text.background, style = MaterialTheme.typography.titleMedium)
+                    Switch(
+                        checked = config.bgBlurEnabled,
+                        onCheckedChange = { config = config.copy(bgBlurEnabled = it) }
                     )
+                }
+                Text(text.bgLevel.format(config.bgBlurLevel), style = MaterialTheme.typography.bodySmall)
+                Slider(
+                    value = (config.bgBlurLevel.toFloatOrNull() ?: 40f).coerceIn(0f, 100f),
+                    onValueChange = { config = config.copy(bgBlurLevel = it.toInt().toString()) },
+                    valueRange = 0f..100f,
+                    enabled = config.bgBlurEnabled
+                )
+                Text(text.caption, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                TextButton(onClick = { showMore = !showMore }) { Text(text.more) }
+                if (showMore) {
+                    ToggleRow(text.boot, current.bootEnabled, enabled = !busy) { on ->
+                        scope.launch {
+                            busy = true
+                            message = control.setBootEnabled(on)
+                            busy = false
+                            reload(fillForm = false)
+                        }
+                    }
+                    Text(text.settings, style = MaterialTheme.typography.titleMedium)
+                    ChipRow(text.lens, listOf("all", "front", "back"), config.lensPolicy, mapOf("all" to text.lensAll, "front" to text.lensFront, "back" to text.lensBack)) {
+                        config = config.copy(lensPolicy = it)
+                    }
+                    ChipRow(text.backend, listOf("gpu_gl", "cpu"), config.accelBackend, mapOf("gpu_gl" to "GPU", "cpu" to "CPU")) {
+                        config = config.copy(accelBackend = it)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(
+                            value = config.fpsTarget,
+                            onValueChange = { config = config.copy(fpsTarget = it.filter(Char::isDigit)) },
+                            label = { Text(text.fpsTarget) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = config.fpsFloor,
+                            onValueChange = { config = config.copy(fpsFloor = it.filter(Char::isDigit)) },
+                            label = { Text(text.fpsFloor) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                    }
+                    OutlinedTextField(
+                        value = config.rssBudgetMb,
+                        onValueChange = { config = config.copy(rssBudgetMb = it.filter(Char::isDigit)) },
+                        label = { Text(text.ram) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = config.thermalLadder,
+                        onValueChange = { config = config.copy(thermalLadder = it.trim()) },
+                        label = { Text(text.thermal) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            config = config.copy(fpsTarget = "20", fpsFloor = "15")
+                        }) { Text(text.presetKyc) }
+                        OutlinedButton(onClick = {
+                            config = config.copy(fpsTarget = "30", fpsFloor = "15")
+                        }) { Text(text.presetPreview) }
+                    }
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                busy = true
+                                message = control.save(config, rawEnv, restartIfRunning = current.running)
+                                busy = false
+                                reload(fillForm = true)
+                            }
+                        },
+                        enabled = !busy
+                    ) { Text(text.save) }
+                    if (!current.log.isBlank()) {
+                        Text(text.log, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            current.log.takeLast(1200),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 }
             }
             if (!message.isNullOrBlank()) {
@@ -329,9 +431,10 @@ fun HomeScreen(
     if (showPreview) {
         DraggableCameraPreview(
             effect = PreviewEffect(
-                blur = config.blurEnabled,
-                track = config.blurTrack,
-                level = config.blurLevel.toIntOrNull() ?: 0,
+                maskRadius = config.blurLevel.toIntOrNull() ?: 0,
+                track = true,
+                bgBlur = config.bgBlurEnabled,
+                bgLevel = config.bgBlurLevel.toIntOrNull() ?: 0,
                 identity = identityBitmap,
                 frontCamera = config.lensPolicy != "back"
             ),
@@ -345,6 +448,46 @@ fun HomeScreen(
             onClose = { showPreview = false }
         )
     }
+    }
+}
+
+@Composable
+private fun FaceChoice(label: String, selected: Boolean, bitmap: Bitmap?, onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(84.dp).clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(76.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .border(
+                    width = if (selected) 2.dp else 1.dp,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    shape = CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = label,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Text(label.take(1), style = MaterialTheme.typography.titleLarge)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
