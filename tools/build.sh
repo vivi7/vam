@@ -27,6 +27,10 @@ if [ -z "$NDK_ROOT" ]; then
     elif [ -d "/opt/android-ndk" ]; then
         NDK_ROOT="/opt/android-ndk"
         echo "Found NDK at $NDK_ROOT"
+    elif [ -d "/Applications/SDKs/android/ndk" ]; then
+        LATEST_NDK="$(ls -1 "/Applications/SDKs/android/ndk" 2>/dev/null | sort -V | tail -n 1)"
+        NDK_ROOT="/Applications/SDKs/android/ndk/$LATEST_NDK"
+        echo "Found NDK at $NDK_ROOT"
     else
         echo -e "${RED}Error: NDK not found. Please set ANDROID_NDK_HOME or NDK_ROOT${NC}"
         exit 1
@@ -43,6 +47,8 @@ cd "$PROJECT_DIR/payload"
 if [ -f "Android.mk" ]; then
     echo "Building payload with ndk-build..."
     $NDK_ROOT/ndk-build \
+        NDK_PROJECT_PATH=. \
+        APP_BUILD_SCRIPT=Android.mk \
         APP_PLATFORM=android-31 \
         APP_ABI=arm64-v8a \
         APP_OPTIM=release \
@@ -64,6 +70,8 @@ cd "$PROJECT_DIR/daemon"
 if [ -f "Android.mk" ]; then
     echo "Building daemon with ndk-build..."
     $NDK_ROOT/ndk-build \
+        NDK_PROJECT_PATH=. \
+        APP_BUILD_SCRIPT=Android.mk \
         APP_PLATFORM=android-31 \
         APP_ABI=arm64-v8a \
         APP_OPTIM=release \

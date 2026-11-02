@@ -1,12 +1,15 @@
 // hook.cpp - Frame hook implementation for camswap
 
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <link.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <android/log.h>
@@ -97,20 +100,74 @@ static uintptr_t self_base() {
 }
 
 // ---------------------------------------------------------------------------
-// ring buffer
+// ring buffer (file-backed, daemon is owner)
 
-static int g_shm_fd = 0;
+static int g_shm_fd = -1;
 static void *g_shm_ptr = nullptr;
 static RingHeader *g_ring = nullptr;
 
-static bool create_ring_buffer() {
-  const size_t len = ring_total_bytes();
+static void read_ring_path(char *out, size_t out_len) {
+  const char *env_path = getenv("CAMSWAP_RING_PATH");
+  if (env_path && env_path[0]) {
+    snprintf(out, out_len, "%s", env_path);
+    return;
+  }
 
-  // Use ashmem for shared memory
-  int fd = ASharedMemory_create("camswap_ring", static_cast<size_t>(len));
+  const char *candidates[] = {"/data/adb/modules/camswap/system/etc/camswap/device.env",
+                              "/system/etc/camswap/device.env"};
+  for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+    FILE *f = fopen(candidates[i], "r");
+    if (!f)
+      continue;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+      if (strncmp(line, "ring_path=", 10) == 0) {
+        char *val = line + 10;
+        size_t l = strlen(val);
+        while (l > 0 && (val[l - 1] == '\n' || val[l - 1] == '\r')) {
+          val[--l] = '\0';
+        }
+        if (l > 0) {
+          snprintf(out, out_len, "%s", val);
+          fclose(f);
+          return;
+        }
+      }
+    }
+    fclose(f);
+  }
+
+  snprintf(out, out_len, "%s", CAMSWAP_DEFAULT_RING_PATH);
+}
+
+static bool attach_or_create_ring_buffer() {
+  const size_t len = static_cast<size_t>(ring_total_bytes());
+  char ring_path[256];
+  read_ring_path(ring_path, sizeof(ring_path));
+
+  // Prefer attaching to the file-backed ring owned by the daemon
+  int fd = open(ring_path, O_RDWR | O_CLOEXEC);
+  bool created = false;
   if (fd < 0) {
-    LOGE("ring: ashmem_create_region failed");
-    return false;
+    fd = open(ring_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    if (fd >= 0) {
+      if (ftruncate(fd, static_cast<off_t>(len)) != 0) {
+        close(fd);
+        fd = -1;
+      } else {
+        created = true;
+      }
+    }
+  }
+
+  if (fd < 0) {
+    // Fallback to ashmem for isolated self-test when file path is inaccessible
+    fd = ASharedMemory_create("camswap_ring", len);
+    if (fd < 0) {
+      LOGE("ring: failed to open %s and ashmem fallback failed", ring_path);
+      return false;
+    }
+    created = true;
   }
 
   void *ptr = mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -124,26 +181,31 @@ static bool create_ring_buffer() {
   g_shm_ptr = ptr;
   g_ring = static_cast<RingHeader *>(ptr);
 
-  g_ring->magic = kRingMagic;
-  g_ring->version = kRingVersion;
-  g_ring->laneCount = kRingLanes;
+  if (created || g_ring->magic != kRingMagic ||
+      g_ring->version != kRingVersion) {
+    memset(g_ring, 0, kRingArenaBase);
+    g_ring->magic = kRingMagic;
+    g_ring->version = kRingVersion;
+    g_ring->laneCount = kRingLanes;
+    for (uint32_t i = 0; i < kRingLanes; ++i) {
+      g_ring->lane[i].dataOffset = kRingArenaBase + i * ring_slice_bytes();
+    }
+  }
 
-  LOGI("ring: created at %p, size %zu", ptr, len);
+  LOGI("ring: mapped at %p (path=%s, size=%zu, v=%u)", ptr, ring_path, len,
+       g_ring->version);
   return true;
 }
 
 static void destroy_ring_buffer() {
-  if (g_ring) {
-    munmap(g_ring, ring_total_bytes());
+  if (g_shm_ptr) {
+    munmap(g_shm_ptr, static_cast<size_t>(ring_total_bytes()));
+    g_shm_ptr = nullptr;
     g_ring = nullptr;
   }
   if (g_shm_fd >= 0) {
     close(g_shm_fd);
-    g_shm_fd = 0;
-  }
-  if (g_shm_ptr) {
-    munmap(g_shm_ptr, ring_total_bytes());
-    g_shm_ptr = nullptr;
+    g_shm_fd = -1;
   }
 }
 
@@ -168,22 +230,22 @@ bool hook_install(uintptr_t target) {
     LOGI("hook: found existing control block");
   }
 
-  // Create ring buffer if not present
+  // Attach or create ring buffer
   if (g_ctrl->shm_fd == 0) {
-    if (!create_ring_buffer()) {
-      LOGE("hook: failed to create ring buffer");
+    if (!attach_or_create_ring_buffer()) {
+      LOGE("hook: failed to attach/create ring buffer");
       return false;
     }
-    g_ctrl->shm_fd = g_shm_fd;
+    g_ctrl->shm_fd = static_cast<uint32_t>(g_shm_fd);
     g_ctrl->shm_size = ring_total_bytes();
-    LOGI("hook: ring buffer created");
+    LOGI("hook: ring buffer ready");
   } else {
-    // Reattach to existing ring
-    g_shm_fd = g_ctrl->shm_fd;
-    g_shm_ptr = mmap(nullptr, g_ctrl->shm_size, PROT_READ | PROT_WRITE,
-                     MAP_SHARED, g_shm_fd, 0);
+    g_shm_fd = static_cast<int>(g_ctrl->shm_fd);
+    g_shm_ptr = mmap(nullptr, static_cast<size_t>(g_ctrl->shm_size),
+                     PROT_READ | PROT_WRITE, MAP_SHARED, g_shm_fd, 0);
     if (g_shm_ptr == MAP_FAILED) {
       LOGE("hook: failed to reattach to ring buffer");
+      g_shm_ptr = nullptr;
       return false;
     }
     g_ring = static_cast<RingHeader *>(g_shm_ptr);
@@ -193,6 +255,7 @@ bool hook_install(uintptr_t target) {
   // Store hook address in control block
   g_ctrl->owner_base = self_base();
   g_hook_addr = target;
+  (void)g_original_fn;
 
   LOGI("hook: hook installed at %p", reinterpret_cast<void *>(target));
   return true;
@@ -208,6 +271,7 @@ bool hook_remove() {
   if (g_ctrl) {
     g_ctrl->active = 0;
     g_ctrl->hooks_installed = 0;
+    g_ctrl->shm_fd = 0;
   }
 
   g_hook_addr = 0;
@@ -216,26 +280,25 @@ bool hook_remove() {
 }
 
 bool hook_format_supported(int32_t format) {
-  // Support IMPLEMENTATION_DEFINED (0x22) and YUV formats
-  return format == 0x22 || format == 0x23 || format == 0x24;
+  return format == static_cast<int32_t>(kFormatImplDefined) ||
+         format == static_cast<int32_t>(kFormatYuv420_888) ||
+         format == static_cast<int32_t>(kFormatBlob);
 }
 
 int selftest_run() {
   LOGI("selftest: running");
 
-  // Test 1: Control block
   if (!g_ctrl || g_ctrl->magic != kControlMagic) {
     LOGE("selftest: control block invalid");
     return 1;
   }
 
-  // Test 2: Ring buffer
-  if (!g_ring || g_ring->magic != kRingMagic) {
+  if (!g_ring || g_ring->magic != kRingMagic ||
+      g_ring->version != kRingVersion) {
     LOGE("selftest: ring buffer invalid");
     return 1;
   }
 
-  // Test 3: Format support
   if (!hook_format_supported(0x22)) {
     LOGE("selftest: format 0x22 not supported");
     return 1;

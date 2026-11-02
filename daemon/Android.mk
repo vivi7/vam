@@ -11,6 +11,7 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := \
     src/main.cpp \
     src/ring/ringbuffer.cpp \
+    src/ai/pipeline.cpp \
     src/ai/face_landmarker.cpp \
     src/ai/face_swap.cpp \
     src/ai/color_transfer.cpp \

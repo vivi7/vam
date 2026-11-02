@@ -16,9 +16,10 @@ log "Starting camswap module installation..."
 log "Creating directories..."
 mkdir -p "$MODPATH/system/bin"
 mkdir -p "$MODPATH/system/lib64"
-mkdir -p "$MODPATH/system/etc/camswap"
+mkdir -p "$MODPATH/system/etc/camswap/models"
+mkdir -p "$MODPATH/system/etc/camswap/identities"
 
-# Binaries ship in system/bin. Optional extra copies if a flat layout is used.
+# Copy binaries if flat layout is present
 log "Copying binaries..."
 if [ -f "$MODDIR/payload/camswap_payload" ]; then
     cp -f "$MODDIR/payload/camswap_payload" "$MODPATH/system/bin/"
@@ -27,10 +28,20 @@ if [ -f "$MODDIR/daemon/camswap_daemon" ]; then
     cp -f "$MODDIR/daemon/camswap_daemon" "$MODPATH/system/bin/"
 fi
 
+# Copy shared libraries (libonnxruntime.so, payload .so) if present in staging tree
+log "Copying shared libraries..."
+if [ -d "$MODDIR/lib64" ]; then
+    cp -f "$MODDIR/lib64/"*.so "$MODPATH/system/lib64/" 2>/dev/null || true
+fi
+if [ -f "$MODDIR/system/lib64/libonnxruntime.so" ] && [ ! -f "$MODPATH/system/lib64/libonnxruntime.so" ]; then
+    cp -f "$MODDIR/system/lib64/libonnxruntime.so" "$MODPATH/system/lib64/"
+fi
+
 # Set permissions
 log "Setting permissions..."
-chmod 755 "$MODPATH/system/bin/camswap_payload"
-chmod 755 "$MODPATH/system/bin/camswap_daemon"
+[ -f "$MODPATH/system/bin/camswap_payload" ] && chmod 755 "$MODPATH/system/bin/camswap_payload"
+[ -f "$MODPATH/system/bin/camswap_daemon" ] && chmod 755 "$MODPATH/system/bin/camswap_daemon"
+chmod 755 "$MODPATH/service.sh" 2>/dev/null || true
 
 # Copy device config
 log "Copying device config..."
@@ -40,9 +51,18 @@ elif [ ! -f "$MODPATH/system/etc/camswap/device.env" ] && [ -f "$MODDIR/system/e
     cp -f "$MODDIR/system/etc/camswap/device.env" "$MODPATH/system/etc/camswap/device.env"
 fi
 
-# Copy identity (default)
-log "Copying default identity..."
-mkdir -p "$MODPATH/system/etc/camswap/identities"
-cp -f "$MODDIR/refs/inswapper-512-live/identity_default.bin" "$MODPATH/system/etc/camswap/identities/default.bin" 2>/dev/null || true
+# Copy AI models (face_landmarker.task, inswapper_512_live_int8.onnx, emap.bin) if present
+log "Checking AI models..."
+if [ -d "$MODDIR/models" ]; then
+    cp -f "$MODDIR/models/"* "$MODPATH/system/etc/camswap/models/" 2>/dev/null || true
+fi
 
-log "Installation complete!"
+# Copy default identity if present
+log "Checking default identity..."
+if [ -f "$MODDIR/identities/default.bin" ]; then
+    cp -f "$MODDIR/identities/default.bin" "$MODPATH/system/etc/camswap/identities/default.bin"
+elif [ -f "$MODDIR/refs/inswapper-512-live/identity_default.bin" ]; then
+    cp -f "$MODDIR/refs/inswapper-512-live/identity_default.bin" "$MODPATH/system/etc/camswap/identities/default.bin"
+fi
+
+log "Installation complete (missing models/identity will run in safe passthrough)."
